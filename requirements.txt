@@ -2,7 +2,10 @@ Adafruit-Blinka==7.3.0
 adafruit-circuitpython-busdevice==5.1.8
 adafruit-circuitpython-lis3dh==5.1.13
 adafruit-circuitpython-mcp3xxx==1.4.7
+adafruit-circuitpython-mcp4725==1.4.5
 adafruit-circuitpython-typing==1.7.0
+Adafruit-GPIO==1.0.3
+Adafruit-MCP4725==1.0.4
 Adafruit-PlatformDetect==3.22.1
 Adafruit-PureIO==1.1.9
 colorzero==2.0
