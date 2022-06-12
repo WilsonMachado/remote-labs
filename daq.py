@@ -28,7 +28,7 @@ led_1 = LED(4)
 
 # Hilo para la adqusición de los datos
 
-set_point = 3
+set_point = 0
 
 def theard_adc_get_data():
   dac_voltage = (3/20) * (set_point + 10)
@@ -40,7 +40,7 @@ def theard_adc_get_data():
       sum += adc_voltage
     sum = sum / 10
     print("La planta está en: {:.2f} V".format(sum)) # Establecer decimales: "{:.2f}".format(variable)
-    time.sleep(0.1)  
+    time.sleep(0.01)  
 
 # Hilo para el LED
 
