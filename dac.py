@@ -12,13 +12,13 @@ while True:
     try: 
       print('Setting voltage to 0!')
       dac.set_voltage(0)
-      time.sleep(2.0)
+      time.sleep(6.0)
       print('Setting voltage to 1/2 Vdd!')
       dac.set_voltage(2048)  # 2048 = half of 4096
-      time.sleep(2.0)
+      time.sleep(6.0)
       print('Setting voltage to Vdd!')
       dac.set_voltage(4096, True)
-      time.sleep(2.0)
+      time.sleep(6.0)
 
     except KeyboardInterrupt:
         print('\nExiting...')
