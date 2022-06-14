@@ -1,5 +1,6 @@
 # Librerías del sistema
 
+from socket import socket
 import busio
 import digitalio
 import board
@@ -7,10 +8,11 @@ import threading
 import time
 import sys
 
-# Librerías para el servidor We
+# Librerías para el servidor Web
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 
 # Librerías para los perifericos
 
@@ -27,10 +29,16 @@ relay_3 = LED(23)
 
 dac_voltage = 0 # Este valor estará entre -10 y +10 V, arranca en cero para garantizar la seguridad de la planta
 
+streaming_data = False # Esta variable indica si el servidor está en modo streaming de datos o no
+
+#########################################################################################################
+
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'remote-lab-W!'
+socketio = SocketIO(app, cors_allowed_origins="*")
 CORS(app)
 
-@app.route('/v1.0/iot-control/get_satus_controller') # Obtener el estado de los perifericos del controlador
+""" @app.route('/v1.0/iot-control/get_status_controller') # Obtener el estado de los perifericos del controlador
 def get_satus_controller():
   global channel_0
   sum = 0
@@ -44,28 +52,63 @@ def get_satus_controller():
     status_relay_3 = relay_3.value,
     adc_value      = round(sum, 2),
     dac_value      = round(dac_voltage, 2) 
-  ))
+  )) """
 
-@app.route('/v1.0/iot-control/change-relay/<relay>') # Control de salidas por relé
-def control_relay(relay):
-  if(relay == '1'):    
+@socketio.on('/v1.0/iot-control/change_relay') # Control de salidas por relé
+def control_relay(relay): 
+  if(relay['message'] == '1'):    
     relay_1.toggle()
-  elif (relay == '2'):
+  elif (relay['message'] == '2'):
     relay_2.toggle()
-  elif (relay == '3'):
+  elif (relay['message'] == '3'):
     relay_3.toggle()
-  return("Relevador ;)")
 
-@app.route('/v1.0/iot-control/change_dac_output/<set_dac_voltage>') # Control de salidas por relé
-def change_dac_output(set_dac_voltage):
+  socketio.emit('/v1.0/iot-control/get_status_relay', {
+    'status_relay_1': relay_1.value,
+    'status_relay_2': relay_2.value,
+    'status_relay_3': relay_3.value}, broadcast=True)
+
+@socketio.on('/v1.0/iot-control/get_status_relay') # Obtener cambios en los relevadores y enviar a todos
+def get_status_relay():
+  socketio.emit('/v1.0/iot-control/get_status_relay', {
+    'status_relay_1': relay_1.value,
+    'status_relay_2': relay_2.value,
+    'status_relay_3': relay_3.value}, broadcast=True)
+
+@socketio.on('/v1.0/iot-control/set_reference') # Establecer el voltaje del DAC
+def change_dac_output(reference):
   global dac_voltage
-  dac_voltage = (20 * (int(set_dac_voltage) - 2048)) / 4095 
+  dac_voltage = (20 * (int(reference['message']) - 2048)) / 4095 
   dac.set_voltage(int((((3/20) * (dac_voltage + 10)))*4095/3.255)) 
-  return("DAC ;)")
-
+  
 @app.route("/")
 def home_route():
   return "Esta es la API de la planta :)"
+
+@socketio.on('/v1.0/iot-control/get_status_controller') # Iniciar modo de adqusición de datos
+def get_satus_controller(message):
+  global streaming_data
+  streaming_data = True  
+  while streaming_data:
+    sum = 0
+    for i in range (10):
+        adc_voltage = (20/3) * (channel_0.voltage - 1.5)
+        sum += adc_voltage
+    sum = sum / 10
+    time.sleep(0.01)
+    socketio.emit('/v1.0/iot-control/get_status_controller', {  
+      'status_relay_1': relay_1.value,
+      'status_relay_2': relay_2.value,
+      'status_relay_3': relay_3.value,    
+      'adc_value'      : round(sum, 2),
+      'dac_value'      : round(dac_voltage, 2) 
+    }, broadcast=True)
+    
+
+@socketio.on('/v1.0/iot-control/stop_get_status_controller') # Detener modo de adqusición de datos
+def stop_get_satus_controller(message):
+  global streaming_data
+  streaming_data = False 
 
 if __name__ == '__main__':
   # Objeto para el ADC
@@ -79,4 +122,6 @@ if __name__ == '__main__':
   dac.set_voltage(int((((3/20) * (dac_voltage + 10)))*4095/3.255))
   
   # Ejecución de la aplicación
-  app.run(debug=True, host='0.0.0.0', port=5001)
+  #app.run(debug=True, host='0.0.0.0', port=5001)
+  socketio.run(app, debug=True, host='0.0.0.0', port=5001)
+    
