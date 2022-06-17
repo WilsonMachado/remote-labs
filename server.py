@@ -1,6 +1,7 @@
 # Librerías del sistema
 
 from socket import socket
+from datetime import datetime
 import busio
 import digitalio
 import board
@@ -28,7 +29,6 @@ relay_2 = LED(24)
 relay_3 = LED(23)
 
 dac_voltage = 0 # Este valor estará entre -10 y +10 V, arranca en cero para garantizar la seguridad de la planta
-
 streaming_data = False # Esta variable indica si el servidor está en modo streaming de datos o no
 
 #########################################################################################################
@@ -37,22 +37,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'remote-lab-W!'
 socketio = SocketIO(app, cors_allowed_origins="*")
 CORS(app)
-
-""" @app.route('/v1.0/iot-control/get_status_controller') # Obtener el estado de los perifericos del controlador
-def get_satus_controller():
-  global channel_0
-  sum = 0
-  for i in range (10):
-      adc_voltage = (20/3) * (channel_0.voltage - 1.5)
-      sum += adc_voltage
-  sum = sum / 10
-  return(jsonify(
-    status_relay_1 = relay_1.value,
-    status_relay_2 = relay_2.value,
-    status_relay_3 = relay_3.value,
-    adc_value      = round(sum, 2),
-    dac_value      = round(dac_voltage, 2) 
-  )) """
 
 @socketio.on('/v1.0/iot-control/change_relay') # Control de salidas por relé
 def control_relay(relay): 
@@ -87,23 +71,24 @@ def home_route():
 
 @socketio.on('/v1.0/iot-control/get_status_controller') # Iniciar modo de adqusición de datos
 def get_satus_controller(message):
-  global streaming_data
+  global streaming_data, array_voltage, now
   streaming_data = True  
   while streaming_data:
-    sum = 0
-    for i in range (10):
-        adc_voltage = (20/3) * (channel_0.voltage - 1.5)
-        sum += adc_voltage
-    sum = sum / 10
-    time.sleep(0.01)
+    array_voltage = [] # Este array guardará los valores de la tensión de la planta    
+    for i in range (9):
+        array_voltage.append(round(((20/3) * (channel_0.voltage - 1.5)), 2))
+        time.sleep(0.001)
+    array_voltage.sort()
+    now += 0.01
     socketio.emit('/v1.0/iot-control/get_status_controller', {  
       'status_relay_1': relay_1.value,
       'status_relay_2': relay_2.value,
       'status_relay_3': relay_3.value,    
-      'adc_value'      : round(sum, 2),
-      'dac_value'      : round(dac_voltage, 2) 
+      'adc_value'      : array_voltage[4],
+      'dac_value'      : round(dac_voltage, 2),
+      'transmition_status' : streaming_data
     }, broadcast=True)
-    
+
 
 @socketio.on('/v1.0/iot-control/stop_get_status_controller') # Detener modo de adqusición de datos
 def stop_get_satus_controller(message):
@@ -119,7 +104,7 @@ if __name__ == '__main__':
   dac = Adafruit_MCP4725.MCP4725(address=0x60, busnum=1) # Tener en cuenta la dirección. Para A0 = GND, addr = 0x60. Para A0 = VCC, addr = 0x62.
 
   # Valor inicial del DAC  en 0:
-  dac.set_voltage(int((((3/20) * (dac_voltage + 10)))*4095/3.255))
+  dac.set_voltage(int((((3/20) * (dac_voltage + 10)))*4095/3.255)) 
   
   # Ejecución de la aplicación
   #app.run(debug=True, host='0.0.0.0', port=5001)
