@@ -79,7 +79,6 @@ def get_satus_controller(message):
         array_voltage.append(round(((20/3) * (channel_0.voltage - 1.5)), 2))
         time.sleep(0.001)
     array_voltage.sort()
-    now += 0.01
     socketio.emit('/v1.0/iot-control/get_status_controller', {  
       'status_relay_1': relay_1.value,
       'status_relay_2': relay_2.value,
