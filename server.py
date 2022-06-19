@@ -8,6 +8,7 @@ import board
 import threading
 import time
 import sys
+import numpy as np
 
 # Librerías para el servidor Web
 
@@ -21,7 +22,6 @@ import adafruit_mcp3xxx.mcp3008 as MCP
 from adafruit_mcp3xxx.analog_in import AnalogIn
 import Adafruit_MCP4725
 from gpiozero import LED
-
 ############################################## DEFINICIÓN DE CONSTATES #################################
 
 relay_1 = LED(25)
@@ -30,7 +30,9 @@ relay_3 = LED(23)
 
 dac_voltage = 0 # Este valor estará entre -10 y +10 V, arranca en cero para garantizar la seguridad de la planta
 streaming_data = False # Esta variable indica si el servidor está en modo streaming de datos o no
-
+out_old = 0 # Esta variable almacena el valor de la salida anterior
+closed_loop = True # Esta variable indica si la planta estará en lazo cerrado o no
+referencia = 0 # Esta variable almacena la referencia de la planta
 #########################################################################################################
 
 app = Flask(__name__)
@@ -53,7 +55,7 @@ def control_relay(relay):
     'status_relay_3': relay_3.value}, broadcast=True)
 
 @socketio.on('/v1.0/iot-control/get_status_relay') # Obtener cambios en los relevadores y enviar a todos
-def get_status_relay():
+def get_status_relay(msg):
   socketio.emit('/v1.0/iot-control/get_status_relay', {
     'status_relay_1': relay_1.value,
     'status_relay_2': relay_2.value,
@@ -61,30 +63,53 @@ def get_status_relay():
 
 @socketio.on('/v1.0/iot-control/set_reference') # Establecer el voltaje del DAC
 def change_dac_output(reference):
-  global dac_voltage
-  dac_voltage = (20 * (int(reference['message']) - 2048)) / 4095 
-  dac.set_voltage(int((((3/20) * (dac_voltage + 10)))*4095/3.255)) 
+  global referencia
+  referencia = (20 * (int(reference['message']) - 2048)) / 4095    
   
 @app.route("/")
 def home_route():
   return "Esta es la API de la planta :)"
+
+@socketio.on('/v1.0/iot-control/set_closed_loop') # Saber si el experimento será en lazo cerrado o no
+def set_closed_loop(close_loop):
+  global closed_loop
+  closed_loop = not closed_loop
+  socketio.emit('/v1.0/iot-control/get_closed_loop', {
+    'closed_loop': closed_loop}, broadcast=True)
+
+
+@socketio.on('/v1.0/iot-control/get_closed_loop') # Obtener el estado del lazo cerrado
+def get_closed_loop(msg):
+  socketio.emit('/v1.0/iot-control/get_closed_loop', {
+    'closed_loop': closed_loop}, broadcast=True)
 
 @socketio.on('/v1.0/iot-control/get_status_controller') # Iniciar modo de adqusición de datos
 def get_satus_controller(message):
   global streaming_data, array_voltage, now
   streaming_data = True  
   while streaming_data:
-    array_voltage = [] # Este array guardará los valores de la tensión de la planta    
-    for i in range (9):
-        array_voltage.append(round(((20/3) * (channel_0.voltage - 1.5)), 2))
+    array_voltage = np.array([]) # Este array guardará los valores de la tensión de la planta    
+    for i in range (10):
+        array_voltage = np.append(array_voltage, round(((20/3) * (channel_0.voltage - 1.5)) - 0.12, 2))
         time.sleep(0.001)
-    array_voltage.sort()
+    
+    # Obtener la mediana del vector array_voltage
+    
+    voltage = np.percentile(array_voltage, 50)
+    if closed_loop:
+      out = referencia - voltage     
+    else:
+      out = referencia
+    
+    dac.set_voltage(int((((3/20) * (out + 10)))*4095/3.255))
+
     socketio.emit('/v1.0/iot-control/get_status_controller', {  
       'status_relay_1': relay_1.value,
       'status_relay_2': relay_2.value,
       'status_relay_3': relay_3.value,    
-      'adc_value'      : array_voltage[4],
-      'dac_value'      : round(dac_voltage, 2),
+      'adc_value'      : round(voltage, 2),
+      'dac_value'      : round(out, 2),
+      'referencia'     : referencia,
       'transmition_status' : streaming_data
     }, broadcast=True)
 
