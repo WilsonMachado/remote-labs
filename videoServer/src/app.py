@@ -5,9 +5,13 @@ from time import sleep
 import cv2
 import base64
 
-
+import logging
 
 app = Flask(__name__)
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
 app.config['SECRET_KEY'] = 'remote-lab-W!'
 socketio = SocketIO(app, cors_allowed_origins="*")
 CORS(app)

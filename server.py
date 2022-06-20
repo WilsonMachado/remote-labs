@@ -10,7 +10,7 @@ import time
 import sys
 import numpy as np
 from scipy import signal            # Librería para procesamiento de señales
-
+import logging
 # Librerías para el servidor Web
 
 from flask import Flask, jsonify
@@ -32,7 +32,7 @@ relay_3 = LED(23)
 dac_voltage = 0 # Este valor estará entre -10 y +10 V, arranca en cero para garantizar la seguridad de la planta
 streaming_data = False # Esta variable indica si el servidor está en modo streaming de datos o no
 out_old = 0 # Esta variable almacena el valor de la salida anterior
-closed_loop = True # Esta variable indica si la planta estará en lazo cerrado o no
+closed_loop = False # Esta variable indica si la planta estará en lazo cerrado o no
 referencia = 0 # Esta variable almacena la referencia de la planta
 
 tau_d= 0 # Constante de control del lazo cerrado
@@ -51,6 +51,10 @@ contOut  = 0
 #########################################################################################################
 
 app = Flask(__name__)
+
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
 app.config['SECRET_KEY'] = 'remote-lab-W!'
 socketio = SocketIO(app, cors_allowed_origins="*")
 CORS(app)
@@ -65,12 +69,16 @@ def discretePlant(num, den, Ts):        # Función para discretizar la planta
 
     # Discretización del sistema
 
-    sysD = signal.cont2discrete([num, den], Ts, method='bilinear', alpha=None)
+    sysD = signal.cont2discrete((num, den), Ts, method='bilinear', alpha=None)
 
     # Obtención de los vectores del polinomio característico en Z
 
-    numD = sysD[0][0]
-    denD = sysD[1]
+    if len(num) == 1 and len(den) == 1:
+      numD = num
+      denD = den
+    else:
+      numD = sysD[0][0]
+      denD = sysD[1]
 
     # Inversión de los vector (equivalente a evaluar en Z^{-1})
 
@@ -93,46 +101,55 @@ def discretePlant(num, den, Ts):        # Función para discretizar la planta
         vectorRef = np.zeros((vectorCoeff.size // 2) + 1)
 
     vectorOut = np.zeros((vectorCoeff.size // 2)) 
+
+
 def calcOut():                          # Función para el cálculo de la salida
 
     global vectorCoeff, vectorRef, vectorOut, defVector, denD, contOut, contRef
 
-    vectorRef = vectorRef[::-1] # Organización de referencia (Setpoint)
-
-    difVector = np.concatenate((vectorRef, vectorOut)) # Creación del vector completo, con la referencia y la salida       
-    
-    out = np.dot(vectorCoeff, difVector) # Cálculo de la salida: producto punto entre el vector de coeficientes discretizado y el vector de completo
-
-    if(contRef < vectorRef.size - 1): # Registro para almacenar los estados de la entrada
-
-        vectorRef[(vectorRef.size - 2) - contRef] = vectorRef[(vectorRef.size - 1) - contRef]
-        contRef += 1       
-
+    if (numD.size == 1):
+      out = kc*vectorRef[0]
+      if out >= 10:
+        out = 10
+      if out <= -10:
+        out = -10
     else:
+      vectorRef = vectorRef[::-1] # Organización de referencia (Setpoint)
 
-        contRef = 0
+      difVector = np.concatenate((vectorRef, vectorOut)) # Creación del vector completo, con la referencia y la salida       
+      
+      out = np.dot(vectorCoeff, difVector) # Cálculo de la salida: producto punto entre el vector de coeficientes discretizado y el vector de completo
 
-    # Registro para almacenar los estados de la salida
+      if(contRef < vectorRef.size - 1): # Registro para almacenar los estados de la entrada
 
-    if((contOut <= vectorOut.size - 1) and (denD.size == 2)): # Si es de primer orden
+          vectorRef[(vectorRef.size - 2) - contRef] = vectorRef[(vectorRef.size - 1) - contRef]
+          contRef += 1       
 
-        vectorOut[contOut] = vectorOut[vectorOut.size - 1]
-        vectorOut = vectorOut[::-1]
-        vectorOut[vectorOut.size - 1] = out       
-        contOut += 1
-        
+      else:
 
-    if((contOut < vectorOut.size - 1) and (denD.size >= 3)): # Si es de orden superior
+          contRef = 0
 
-        for i in range (0, vectorOut.size - 1):
-            vectorOut[i] = vectorOut[i + 1]
-        
-        vectorOut[vectorOut.size - 1] = out
-        
-        contOut += 2
+      # Registro para almacenar los estados de la salida
 
-    else:
-        contOut = 0
+      if((contOut <= vectorOut.size - 1) and (denD.size == 2)): # Si es de primer orden
+
+          vectorOut[contOut] = vectorOut[vectorOut.size - 1]
+          vectorOut = vectorOut[::-1]
+          vectorOut[vectorOut.size - 1] = out       
+          contOut += 1
+          
+
+      if((contOut < vectorOut.size - 1) and (denD.size >= 3)): # Si es de orden superior
+
+          for i in range (0, vectorOut.size - 1):
+              vectorOut[i] = vectorOut[i + 1]
+          
+          vectorOut[vectorOut.size - 1] = out
+          
+          contOut += 2
+
+      else:
+          contOut = 0
 
     return out
 #######################################################################################################
@@ -141,20 +158,36 @@ def calcOut():                          # Función para el cálculo de la salida
 def set_controller_parameters(data):
   global tau_d, tau_i, kc
   
-  alfa = tau_d / 100
+  
 
   kc = data['kc']
   tau_i = data['tau_i']
   tau_d = data['tau_d'] 
 
-  if (tau_d != 0):
+  alfa = tau_d / 100
+
+  print("Kc = {}, Tau_i = {}, Tau_d = {}".format(kc, tau_i, tau_d))
+
+  if kc == 0 and tau_i != 0:
+    num = np.array([1]) 
+  elif (tau_d != 0):
     num = kc * np.array([((tau_i * alfa) + (tau_i * tau_d)), (tau_i + alfa), 1])
-  else:
+  elif (tau_i != 0 and tau_d == 0):
     num = kc * np.array([(tau_i), 1])
-    
-  den = [tau_i * alfa, tau_i, 0]   
+  else:
+    num = kc * np.array([1])
   
+
+  if tau_d == 0 and tau_i == 0:
+    den = np.array([1])
+  else:
+    den = [tau_i * alfa, tau_i, 0]   
+  
+  
+
   discretePlant(num, den, 0.01)
+
+  print("Vector de coeficientes: {}, Vector de referencia: {}, Vector de salida: {}".format(vectorCoeff, vectorRef, vectorOut))
 
 
 @socketio.on('/v1.0/iot-control/change_relay') # Control de salidas por relé
@@ -191,6 +224,7 @@ def home_route():
 def set_closed_loop(close_loop):
   global closed_loop
   closed_loop = not closed_loop
+  print(closed_loop)
   socketio.emit('/v1.0/iot-control/get_closed_loop', {
     'closed_loop': closed_loop}, broadcast=True)
 
@@ -208,33 +242,34 @@ def get_satus_controller(message):
   streaming_data = True  
   while streaming_data:
     array_voltage = np.array([]) # Este array guardará los valores de la tensión de la planta    
-    for i in range (10):
-        array_voltage = np.append(array_voltage, round(((20/3) * (channel_0.voltage - 1.5)), 2))
+    for i in range (9):
+        array_voltage = np.append(array_voltage, round(((20/3) * (channel_0.voltage - 1.5))-0.15, 2))        
         time.sleep(0.001)
     
     # Obtener la mediana del vector array_voltage
-   
-    voltage = np.percentile(array_voltage, 50) # Esta es la salida de la planta
+    if array_voltage.std() <= 0.5:
+      print(array_voltage)
+      voltage = np.percentile(array_voltage, 50) # Esta es la salida de la planta
+      print(voltage)
+      if closed_loop:
+        vectorRef[0] = referencia - voltage # Esta es la salida de la planta
+        out = calcOut()
+      else:
+        out = referencia
 
-    if closed_loop and ((kc != 0) or (tau_i != 0)):
-      vectorRef[0] = referencia - voltage # Esta es la salida de la planta
-      out = calcOut()     
-    elif closed_loop:
-      out = referencia - voltage
-    else:
-      out = referencia
-    
-    dac.set_voltage(int((((3/20) * (out + 10)))*4095/3.255))
+      #print(out)
+      
+      dac.set_voltage(int((((3/20) * (out + 10)))*4095/3.255))
 
-    socketio.emit('/v1.0/iot-control/get_status_controller', {  
-      'status_relay_1': relay_1.value,
-      'status_relay_2': relay_2.value,
-      'status_relay_3': relay_3.value,    
-      'adc_value'      : round(voltage, 2),
-      'dac_value'      : round(out, 2),
-      'referencia'     : referencia,
-      'transmition_status' : streaming_data
-    }, broadcast=True)
+      socketio.emit('/v1.0/iot-control/get_status_controller', {  
+        'status_relay_1': relay_1.value,
+        'status_relay_2': relay_2.value,
+        'status_relay_3': relay_3.value,    
+        'adc_value'      : round(voltage, 2),
+        'dac_value'      : round(out, 2),
+        'referencia'     : referencia,
+        'transmition_status' : streaming_data
+      }, broadcast=True)
 
 
 @socketio.on('/v1.0/iot-control/stop_get_status_controller') # Detener modo de adqusición de datos
