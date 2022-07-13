@@ -1,13 +1,9 @@
 # Librerías del sistema
 
-from socket import socket
-from datetime import datetime
 import busio
 import digitalio
 import board
-import threading
 import time
-import sys
 import numpy as np
 from scipy import signal            # Librería para procesamiento de señales
 import logging
@@ -31,7 +27,6 @@ relay_3 = LED(23)
 
 dac_voltage = 0 # Este valor estará entre -10 y +10 V, arranca en cero para garantizar la seguridad de la planta
 streaming_data = False # Esta variable indica si el servidor está en modo streaming de datos o no
-out_old = 0 # Esta variable almacena el valor de la salida anterior
 closed_loop = False # Esta variable indica si la planta estará en lazo cerrado o no
 referencia = 0 # Esta variable almacena la referencia de la planta
 
@@ -39,15 +34,11 @@ tau_d= 0 # Constante de control del lazo cerrado
 tau_i = 0 # Constante de control del lazo cerrado
 kc = 0 # Constante de control del lazo cerrado
 
-vectorCoeff = []
-vectorRef   = []
-vectorOut   = []
-defVector   = []
-numD = []
-denD = []
-
-contRef  = 0
-contOut  = 0
+vectorNum = []
+vectorDen = []
+vectorError = []
+vectorMu   = []
+b0 = 0
 #########################################################################################################
 
 app = Flask(__name__)
@@ -65,7 +56,7 @@ CORS(app)
 
 def discretePlant(num, den, Ts):        # Función para discretizar la planta
 
-    global vectorCoeff, vectorRef, vectorOut, defVector, numD, denD, contOut, contRef
+    global vectorNum, vectorDen, vectorError, vectorMu, b0
 
     # Discretización del sistema
 
@@ -74,91 +65,58 @@ def discretePlant(num, den, Ts):        # Función para discretizar la planta
     # Obtención de los vectores del polinomio característico en Z
 
     if len(num) == 1 and len(den) == 1:
-      numD = num
-      denD = den
+      vectorNum = num
+      vectorDen = den
     else:
-      numD = sysD[0][0]
-      denD = sysD[1]
+      vectorNum = sysD[0][0]
+      vectorDen = sysD[1]
 
-    # Inversión de los vector (equivalente a evaluar en Z^{-1})
+    # Inversión de los vectores (equivalente a evaluar en Z^{-1})
 
-    numD = numD[::-1]                      
-    denD = denD[::-1]
+    vectorNum = vectorNum[::-1]                      
+    vectorDen = vectorDen[::-1]
 
-    # Vector de coeficientes para obtener la salida de forma recurrente
+    # Organización de los vectores para posterior usarlos en el cálculo de la salida
+    b0 = vectorDen[vectorDen.size - 1]
 
-    vectorCoeff = np.concatenate((numD, -1 * denD)) 
+    vectorDen = np.delete(vectorDen, (vectorDen.size - 1))
+    
+    vectorError = np.zeros(vectorNum.size)
+    vectorMu = np.zeros(vectorDen.size)
 
-    vectorCoeff = np.delete(vectorCoeff, (vectorCoeff.size - 1))
-
-    vectorCoeff = (1 / denD[(len(denD) - 1)] ) * np.array(vectorCoeff) # Hasta aquí está el vector de coeficientes
-
-    # Vectores para la ecuación en diferencias tanto de salida como de entrada
-
-    vectorRef = np.zeros((vectorCoeff.size // 2))
-
-    if (vectorCoeff.size % 2 != 0):
-        vectorRef = np.zeros((vectorCoeff.size // 2) + 1)
-
-    vectorOut = np.zeros((vectorCoeff.size // 2)) 
-
+def shift_register(arr, num, fill_value=np.nan): # Función para realizar el desplazamiento de registro (Shift Register)
+  arr = np.roll(arr,num)
+  if num < 0:
+      arr[num:] = fill_value
+  elif num > 0:
+      arr[:num] = fill_value
+  return arr
 
 def calcOut():                          # Función para el cálculo de la salida
 
-    global vectorCoeff, vectorRef, vectorOut, defVector, denD, contOut, contRef
+    global vectorNum, vectorDen, vectorError, vectorMu, b0
 
-    if (numD.size == 1):
-      out = kc*vectorRef[0]
-      if out >= 10:
-        out = 10
-      if out <= -10:
-        out = -10
+    if (vectorNum.size == 1):
+      mu_k = kc*vectorError[0]
+      if mu_k >= 10:
+        mu_k = 10
+      if mu_k <= -10:
+        mu_k = -10
     else:
-      vectorRef = vectorRef[::-1] # Organización de referencia (Setpoint)
 
-      difVector = np.concatenate((vectorRef, vectorOut)) # Creación del vector completo, con la referencia y la salida       
-      
-      out = np.dot(vectorCoeff, difVector) # Cálculo de la salida: producto punto entre el vector de coeficientes discretizado y el vector de completo
+      mu_k = (np.dot(vectorNum, vectorError) - np.dot(vectorDen, vectorMu)) / b0
+      if mu_k >= 10:
+        mu_k = 10
+      if mu_k <= -10:
+        mu_k = -10
+      vectorMu = shift_register(vectorMu, 1, mu_k)   
 
-      if(contRef < vectorRef.size - 1): # Registro para almacenar los estados de la entrada
-
-          vectorRef[(vectorRef.size - 2) - contRef] = vectorRef[(vectorRef.size - 1) - contRef]
-          contRef += 1       
-
-      else:
-
-          contRef = 0
-
-      # Registro para almacenar los estados de la salida
-
-      if((contOut <= vectorOut.size - 1) and (denD.size == 2)): # Si es de primer orden
-
-          vectorOut[contOut] = vectorOut[vectorOut.size - 1]
-          vectorOut = vectorOut[::-1]
-          vectorOut[vectorOut.size - 1] = out       
-          contOut += 1
-          
-
-      if((contOut < vectorOut.size - 1) and (denD.size >= 3)): # Si es de orden superior
-
-          for i in range (0, vectorOut.size - 1):
-              vectorOut[i] = vectorOut[i + 1]
-          
-          vectorOut[vectorOut.size - 1] = out
-          
-          contOut += 2
-
-      else:
-          contOut = 0
-
-    return out
+    return mu_k
 #######################################################################################################
 
 @socketio.on('/v1.0/iot-control/set_controller_parameters')
 def set_controller_parameters(data):
-  global tau_d, tau_i, kc
-  
-  
+  global tau_d, tau_i, kc 
 
   kc = data['kc']
   tau_i = data['tau_i']
@@ -172,7 +130,7 @@ def set_controller_parameters(data):
     num = np.array([1]) 
   elif (tau_d != 0):
     num = kc * np.array([((tau_i * alfa) + (tau_i * tau_d)), (tau_i + alfa), 1])
-  elif (tau_i != 0 and tau_d == 0):
+  elif (kc != 0 and tau_i != 0 and tau_d == 0):
     num = kc * np.array([(tau_i), 1])
   else:
     num = kc * np.array([1])
@@ -187,7 +145,7 @@ def set_controller_parameters(data):
 
   discretePlant(num, den, 0.01)
 
-  print("Vector de coeficientes: {}, Vector de referencia: {}, Vector de salida: {}".format(vectorCoeff, vectorRef, vectorOut))
+  print("Vector Numerador: {}, Vector Error: {}, Vector Denominador: {}, Vector Mu: {}, b_0: {}".format(vectorNum, vectorError, vectorDen, vectorMu, b0))
 
 
 @socketio.on('/v1.0/iot-control/change_relay') # Control de salidas por relé
@@ -237,7 +195,7 @@ def get_closed_loop(msg):
 @socketio.on('/v1.0/iot-control/get_status_controller') # Iniciar modo de adqusición de datos
 def get_satus_controller(message):
   
-  global streaming_data, array_voltage, vectorRef, vectorOut
+  global streaming_data, array_voltage, vectorError
   
   streaming_data = True  
   while streaming_data:
@@ -250,9 +208,9 @@ def get_satus_controller(message):
     if array_voltage.std() <= 0.5:
       print(array_voltage)
       voltage = np.percentile(array_voltage, 50) # Esta es la salida de la planta
-      print(voltage)
+      #print(voltage)
       if closed_loop:
-        vectorRef[0] = referencia - voltage # Esta es la salida de la planta
+        vectorError = shift_register(vectorError, 1, referencia - voltage)
         out = calcOut()
       else:
         out = referencia
