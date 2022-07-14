@@ -34,11 +34,13 @@ tau_d= 0 # Constante de control del lazo cerrado
 tau_i = 0 # Constante de control del lazo cerrado
 kc = 0 # Constante de control del lazo cerrado
 
-vectorNum = []
-vectorDen = []
-vectorError = []
-vectorMu   = []
-b0 = 0
+vectorNum = [] # Vector de numerador de la planta
+vectorDen = []  # Vector de denominador de la planta
+vectorError = [] # Vector de error 
+vectorMu   = [0] # Vector de acciones de control anteriores
+b0 = 0 # Término independiente del denominador del controlador PID discreto
+
+usuariosConectados = 0 # Variable que almacena el número de usuarios conectados
 #########################################################################################################
 
 app = Flask(__name__)
@@ -56,31 +58,29 @@ CORS(app)
 
 def discretePlant(num, den, Ts):        # Función para discretizar la planta
 
-    global vectorNum, vectorDen, vectorError, vectorMu, b0
-
-    # Discretización del sistema
-
-    sysD = signal.cont2discrete((num, den), Ts, method='bilinear', alpha=None)
+    global vectorNum, vectorDen, vectorError, vectorMu, b0 
 
     # Obtención de los vectores del polinomio característico en Z
 
-    if len(num) == 1 and len(den) == 1:
+    if num.size == 1 and den.size == 1:
       vectorNum = num
       vectorDen = den
+      b0 = 1
     else:
+      sysD = signal.cont2discrete((num, den), Ts, method='bilinear', alpha=None)
       vectorNum = sysD[0][0]
       vectorDen = sysD[1]
 
-    # Inversión de los vectores (equivalente a evaluar en Z^{-1})
+      # Inversión de los vectores (equivalente a evaluar en Z^{-1})
 
-    vectorNum = vectorNum[::-1]                      
-    vectorDen = vectorDen[::-1]
+      vectorNum = vectorNum[::-1]                      
+      vectorDen = vectorDen[::-1]
 
-    # Organización de los vectores para posterior usarlos en el cálculo de la salida
-    b0 = vectorDen[vectorDen.size - 1]
+      # Organización de los vectores para posterior usarlos en el cálculo de la salida
+      b0 = vectorDen[vectorDen.size - 1]
 
-    vectorDen = np.delete(vectorDen, (vectorDen.size - 1))
-    
+      vectorDen = np.delete(vectorDen, (vectorDen.size - 1))
+      
     vectorError = np.zeros(vectorNum.size)
     vectorMu = np.zeros(vectorDen.size)
 
@@ -126,25 +126,28 @@ def set_controller_parameters(data):
 
   print("Kc = {}, Tau_i = {}, Tau_d = {}".format(kc, tau_i, tau_d))
 
-  if kc == 0 and tau_i != 0:
-    num = np.array([1]) 
-  elif (tau_d != 0):
-    num = kc * np.array([((tau_i * alfa) + (tau_i * tau_d)), (tau_i + alfa), 1])
-  elif (kc != 0 and tau_i != 0 and tau_d == 0):
-    num = kc * np.array([(tau_i), 1])
-  else:
+  if kc != 0 and tau_i == 0 and tau_d == 0:   # Controaldor P
     num = kc * np.array([1])
-  
+    den = np.array([1]) 
 
-  if tau_d == 0 and tau_i == 0:
-    den = np.array([1])
+  elif kc != 0 and tau_i != 0 and tau_d == 0: # Controaldor PI
+    num = kc * np.array([tau_i, 1])
+    den = np.array([tau_i, 0])   
+  
+  elif kc != 0 and tau_i == 0 and tau_d != 0: # Controaldor PD
+    num = kc * np.array([(alfa + tau_d), 1])
+    den = np.array([alfa, 1])    
+
+  elif kc != 0 and tau_i != 0 and tau_d != 0: # Controaldor PID
+    num = kc * np.array([(tau_i*alfa + tau_i*tau_d), (tau_i + alfa), 1])
+    den = np.array([(tau_i*alfa), tau_i, 0])
+    
   else:
-    den = [tau_i * alfa, tau_i, 0]   
-  
-  
+    num = np.array([0])
+    den = np.array([1])
 
   discretePlant(num, den, 0.01)
-
+  
   print("Vector Numerador: {}, Vector Error: {}, Vector Denominador: {}, Vector Mu: {}, b_0: {}".format(vectorNum, vectorError, vectorDen, vectorMu, b0))
 
 
@@ -206,7 +209,7 @@ def get_satus_controller(message):
     
     # Obtener la mediana del vector array_voltage
     if array_voltage.std() <= 0.5:
-      print(array_voltage)
+      #print(array_voltage)
       voltage = np.percentile(array_voltage, 50) # Esta es la salida de la planta
       #print(voltage)
       if closed_loop:
@@ -214,8 +217,7 @@ def get_satus_controller(message):
         out = calcOut()
       else:
         out = referencia
-
-      #print(out)
+        vectorMu[0] = 0
       
       dac.set_voltage(int((((3/20) * (out + 10)))*4095/3.255))
 
@@ -225,7 +227,8 @@ def get_satus_controller(message):
         'status_relay_3': relay_3.value,    
         'adc_value'      : round(voltage, 2),
         'dac_value'      : round(out, 2),
-        'referencia'     : referencia,
+        'mu_k'          : round(vectorMu[0], 2),
+        'referencia'     : round(referencia, 2),
         'transmition_status' : streaming_data
       }, broadcast=True)
 
@@ -234,6 +237,31 @@ def get_satus_controller(message):
 def stop_get_satus_controller(message):
   global streaming_data
   streaming_data = False 
+
+@socketio.on('connect')
+def nuevo_usuario(socket):
+  global usuariosConectados  
+  usuariosConectados += 1
+  
+
+@socketio.on('disconnect')
+def usuario_desconectado():
+  global usuariosConectados, streaming_data, closed_loop
+  usuariosConectados -= 1
+  if usuariosConectados == 0:
+    
+    streaming_data = False 
+    closed_loop = False
+
+    for i in range (3):
+      dac.set_voltage(int((((3/20) * (0 + 10)))*4095/3.255))
+      time.sleep(1)
+    
+
+    relay_1.off()
+    relay_2.off()
+    relay_3.off()   
+
 
 if __name__ == '__main__':
   # Objeto para el ADC
