@@ -38,7 +38,9 @@ vectorNum = [] # Vector de numerador de la planta
 vectorDen = []  # Vector de denominador de la planta
 vectorError = [] # Vector de error 
 vectorMu   = [0] # Vector de acciones de control anteriores
+
 b0 = 0 # Término independiente del denominador del controlador PID discreto
+mu_k = 0
 
 usuariosConectados = 0 # Variable que almacena el número de usuarios conectados
 #########################################################################################################
@@ -71,15 +73,10 @@ def discretePlant(num, den, Ts):        # Función para discretizar la planta
       vectorNum = sysD[0][0]
       vectorDen = sysD[1]
 
-      # Inversión de los vectores (equivalente a evaluar en Z^{-1})
-
-      vectorNum = vectorNum[::-1]                      
-      vectorDen = vectorDen[::-1]
-
       # Organización de los vectores para posterior usarlos en el cálculo de la salida
-      b0 = vectorDen[vectorDen.size - 1]
+      b0 = vectorDen[0]
 
-      vectorDen = np.delete(vectorDen, (vectorDen.size - 1))
+      vectorDen = np.delete(vectorDen, 0)
       
     vectorError = np.zeros(vectorNum.size)
     vectorMu = np.zeros(vectorDen.size)
@@ -124,7 +121,7 @@ def set_controller_parameters(data):
 
   alfa = tau_d / 100
 
-  print("Kc = {}, Tau_i = {}, Tau_d = {}".format(kc, tau_i, tau_d))
+  #print("Kc = {}, Tau_i = {}, Tau_d = {}".format(kc, tau_i, tau_d))
 
   if kc != 0 and tau_i == 0 and tau_d == 0:   # Controaldor P
     num = kc * np.array([1])
@@ -136,7 +133,11 @@ def set_controller_parameters(data):
   
   elif kc != 0 and tau_i == 0 and tau_d != 0: # Controaldor PD
     num = kc * np.array([(alfa + tau_d), 1])
-    den = np.array([alfa, 1])    
+    den = np.array([alfa, 1])
+  
+  elif kc == 0 and tau_i != 0 and tau_d == 0: # Controlador I
+    num = np.array([((1)/(tau_i))])
+    den = np.array([1, 0])    
 
   elif kc != 0 and tau_i != 0 and tau_d != 0: # Controaldor PID
     num = kc * np.array([(tau_i*alfa + tau_i*tau_d), (tau_i + alfa), 1])
@@ -148,7 +149,7 @@ def set_controller_parameters(data):
 
   discretePlant(num, den, 0.01)
   
-  print("Vector Numerador: {}, Vector Error: {}, Vector Denominador: {}, Vector Mu: {}, b_0: {}".format(vectorNum, vectorError, vectorDen, vectorMu, b0))
+  print("Vector Numerador: {}, Vector Denominador: {}".format(vectorNum, vectorDen))
 
 
 @socketio.on('/v1.0/iot-control/change_relay') # Control de salidas por relé
@@ -185,7 +186,7 @@ def home_route():
 def set_closed_loop(close_loop):
   global closed_loop
   closed_loop = not closed_loop
-  print(closed_loop)
+  #print(closed_loop)
   socketio.emit('/v1.0/iot-control/get_closed_loop', {
     'closed_loop': closed_loop}, broadcast=True)
 
@@ -215,9 +216,9 @@ def get_satus_controller(message):
       if closed_loop:
         vectorError = shift_register(vectorError, 1, referencia - voltage)
         out = calcOut()
+        print("Vector Error: {}, Vector Mu: {}".format(vectorError, vectorMu))
       else:
         out = referencia
-        vectorMu[0] = 0
       
       dac.set_voltage(int((((3/20) * (out + 10)))*4095/3.255))
 
@@ -227,7 +228,6 @@ def get_satus_controller(message):
         'status_relay_3': relay_3.value,    
         'adc_value'      : round(voltage, 2),
         'dac_value'      : round(out, 2),
-        'mu_k'          : round(vectorMu[0], 2),
         'referencia'     : round(referencia, 2),
         'transmition_status' : streaming_data
       }, broadcast=True)
