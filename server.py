@@ -246,7 +246,7 @@ def nuevo_usuario(socket):
 
 @socketio.on('disconnect')
 def usuario_desconectado():
-  global usuariosConectados, streaming_data, closed_loop
+  global usuariosConectados, streaming_data, closed_loop, referencia
   usuariosConectados -= 1
   if usuariosConectados == 0:
     
@@ -257,6 +257,7 @@ def usuario_desconectado():
       dac.set_voltage(int((((3/20) * (0 + 10)))*4095/3.255))
       time.sleep(1)
     
+    referencia = 0
 
     relay_1.off()
     relay_2.off()
